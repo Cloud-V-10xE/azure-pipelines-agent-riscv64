@@ -13,7 +13,7 @@ jobs:
       contents: write
     
     outputs:
-      version-number: ${{ steps.check-version.outputs.runner_version }}
+      version-number: ${{ steps.check-version.outputs.agent_version }}
       tag-name: ${{ steps.set-tag.outputs.tag_name }}
 
     steps:
@@ -112,7 +112,7 @@ jobs:
       run: |
         cd azure-pipelines-agent
         echo "=== Patching SelfUpdater.cs ==="
-        UPDATER_V1="src/Runner.Listener/SelfUpdater.cs"
+        UPDATER_V1="src/Agent.Listener/SelfUpdater.cs"
 
         python3 - "$UPDATER_V1" <<'PYEOF'
         import sys, re
@@ -145,7 +145,7 @@ jobs:
     
         echo ""
         echo "=== Patching SelfUpdaterV2.cs ==="
-        UPDATER_V2="src/Runner.Listener/SelfUpdaterV2.cs"
+        UPDATER_V2="src/Agent.Listener/SelfUpdaterV2.cs"
     
         python3 - "$UPDATER_V2" <<'PYEOF'
         import sys, re
@@ -180,10 +180,10 @@ jobs:
         echo ""
         echo "=== Verifying patches ==="
         echo "--- SelfUpdater.cs ---"
-        grep -A 6 "private async Task<bool> UpdateNeeded" src/Runner.Listener/SelfUpdater.cs | head -10
+        grep -A 6 "private async Task<bool> UpdateNeeded" src/Agent.Listener/SelfUpdater.cs | head -10
         echo ""
         echo "--- SelfUpdaterV2.cs ---"
-        grep -A 7 "Busy = true;" src/Runner.Listener/SelfUpdaterV2.cs | head -12
+        grep -A 7 "Busy = true;" src/Agent.Listener/SelfUpdaterV2.cs | head -12
 
     - name: Add linux-riscv64 to RuntimeIdentifiers
       run: |
@@ -198,17 +198,44 @@ jobs:
     - name: Patch VarUtil to detect RISC-V architecture
       run: |
         cd azure-pipelines-agent
-        VARUTIL_FILE="src/Runner.Common/Util/VarUtil.cs"
         
+        VARUTIL_FILE="src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs"
+
         # Backup the file
         cp "$VARUTIL_FILE" "${VARUTIL_FILE}.backup"
+        python3 - "$VARUTIL_FILE" <<'PYEOF'
+        import sys, re
+
+        path = sys.argv[1]
+        with open(path) as f:
+            content = f.read()
+        
+        # Add RiscV64 case before the closing brace of the switch
+        pattern = r'(case Architecture\.Arm64:\s*\n\s*return "ARM64";)'
+        replacement = r'\1\n                case Architecture.RiscV64:\n                    return "RISCV64";'
+        
+        new_content, n = re.subn(pattern, replacement, content, count=1)
+        
+        if n == 0:
+            print("ERROR: Could not find Arm64 case in VarUtil.cs")
+            for i, line in enumerate(content.splitlines()):
+                if 'Architecture' in line:
+                    print(f"  Line {i+1}: {line}")
+            sys.exit(1)
+                
+        with open(path, 'w') as f:
+            f.write(new_content)
+        
+        print("✅ Patched VarUtil.cs with RiscV64 case")
+        PYEOF
+
+
+        echo "Verifying patch:"
+        grep -n "RiscV64\|Arm64\|OSArchitecture" src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
+
         
         # Add RISC-V runtime detection at the start of OSArchitecture getter
         # This checks at runtime and returns RISCV64 before the switch statement
-        sed -i '/get$/,/switch (Constants.Runner.PlatformArchitecture)/ {
-          /switch (Constants.Runner.PlatformArchitecture)/ i\                var arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();\
-                if (arch.Contains("RiscV", System.StringComparison.OrdinalIgnoreCase)) { return "RISCV64"; }
-        }' "$VARUTIL_FILE"
         
         echo "✅ Patched VarUtil.cs to detect RISC-V at runtime"
     - name: Register linux-riscv64 for net8.0
@@ -246,7 +273,32 @@ jobs:
           echo "❌ ERROR: Failed to add linux-riscv64"
           exit 1
         fi
+    - name: Patch PlatformUtil to add IsRiscV64
+      run: |
+        cd azure-pipelines-agent
+        PLATFORM_FILE="src/Agent.Sdk/Util/PlatformUtil.cs"
 
+        python3 - "$PLATFORM_FILE" <<'PYEOF'
+        import sys, re
+                
+        path = sys.argv[1]
+        with open(path) as f:
+            content = f.read()
+        
+        pattern = r'(public static bool IsArm64 => PlatformUtil\.HostArchitecture == Architecture\.Arm64;)'
+        replacement = r'\1\n\n        public static bool IsRiscV64 => PlatformUtil.HostArchitecture == Architecture.RiscV64;  '
+        
+        new_content, n = re.subn(pattern, replacement, content, count=1)
+        
+        if n == 0:
+            print("WARNING: Could not find IsArm64 property - skipping")
+            sys.exit(0)
+        
+        with open(path, 'w') as f:
+            f.write(new_content)
+        
+        print("✅ Patched PlatformUtil.cs with IsRiscV64")
+        PYEOF
     - name: Build with Self-Contained
       run: |
         cd azure-pipelines-agent
@@ -322,7 +374,7 @@ jobs:
         cd azure-pipelines-agent
         echo "=== Verifying Build Output ==="
         
-        for app in "Runner.Listener" "Runner.Worker" "Runner.PluginHost"; do
+        for app in "Agent.Listener" "Agent.Worker" "Agent.PluginHost"; do
           BIN_PATH="_layout/bin/$app"
           DLL_PATH="_layout/bin/${app}.dll"
           
@@ -356,17 +408,17 @@ jobs:
         
         cd _layout/bin
         
-        if [ -f "Runner.Listener" ]; then
+        if [ -f "Agent.Listener" ]; then
           echo "Testing native binary..."
-          if ./Runner.Listener --version; then
+          if ./Agent.Listener --version; then
             echo "✅ Native binary executed successfully!"
           else
             echo "❌ Native binary execution failed"
             exit 1
           fi
-        elif [ -f "Runner.Listener.dll" ]; then
+        elif [ -f "Agent.Listener.dll" ]; then
           echo "Testing DLL with dotnet..."
-          if dotnet Runner.Listener.dll --version; then
+          if dotnet Agent.Listener.dll --version; then
             echo "✅ DLL executed successfully!"
           else
             echo "❌ DLL execution failed"
@@ -387,30 +439,29 @@ jobs:
       id: check-version
       run: |
         cd azure-pipelines-agent
-        if [ -f "_layout/bin/Runner.Listener" ]; then
-          RUNNER_VERSION=$(_layout/bin/Runner.Listener --version 2>/dev/null || cat src/runnerversion)
+        if [ -f "_layout/bin/Agent.Listener" ]; then
+          AGENT_VERSION=$(_layout/bin/Agent.Listener --version 2>/dev/null || cat src/agentversion)
         else
-          RUNNER_VERSION=$(cat src/runnerversion)
+          AGENT_VERSION=$(cat src/agentversion)
         fi
-        echo "The Github runner version is $RUNNER_VERSION"
-        echo "runner_version=$RUNNER_VERSION" >> $GITHUB_OUTPUT
+        echo "The Azure Pipelines agent version is $AGENT_VERSION"
+        echo "agent_version=$AGENT_VERSION" >> $GITHUB_OUTPUT
 
     - name: Set tag name
       id: set-tag
       run: |
         cd azure-pipelines-agent
-        TAG_NAME="v${{ steps.check-version.outputs.runner_version }}-riscv64-net8"
+        TAG_NAME="v${{ steps.check-version.outputs.agent_version }}-riscv64-net8"
         echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}
-        path: "_package/actions-runner-linux-riscv64-*.tar.gz"
+        name: vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}
+        path: "azure-pipelines-agent/_package/vsts-agent-linux-riscv64-*.tar.gz"
 
     - name: Create or verify tag
       run: |
-        cd azure-pipelines-agent
         TAG="${{ steps.set-tag.outputs.tag_name }}"
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -427,11 +478,11 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.set-tag.outputs.tag_name }}
-        name: "GitHub Actions Runner ${{ steps.check-version.outputs.runner_version }} for RISC-V (net8.0)"
+        name: "Azure Pipelines Agent ${{ steps.check-version.outputs.agent_version }} for RISC-V (net8.0)"
         body: |
-          # GitHub Actions Runner for RISC-V
+          # Azure Pipelines Agent for RISC-V
           
-          **Version:** ${{ steps.check-version.outputs.runner_version }}
+          **Version:** ${{ steps.check-version.outputs.agent_version }}
           **Architecture:** linux-riscv64
           **Target Framework:** net8.0
           **Build Date:** ${{ github.event.head_commit.timestamp }}
@@ -448,12 +499,12 @@ jobs:
           ### Installation
           ```bash
           # Download and extract
-          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.set-tag.outputs.tag_name }}/actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}.tar.gz
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.set-tag.outputs.tag_name }}/vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}.tar.gz
           mkdir actions-runner && cd actions-runner
-          tar xzf ../actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}.tar.gz
+          tar xzf ../vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}.tar.gz
           
           # Configure
-          ./config.sh --url https://github.com/YOUR-ORG/YOUR-REPO --token YOUR-TOKEN
+          ./config.sh --url https://dev.azure.com/YOUR-ORG --auth pat --token YOUR-PAT --pool YOUR-POOL
           
           # Run
           ./run.sh
@@ -475,9 +526,9 @@ jobs:
           
           ### Credits
           
-          - Original GitHub Actions Runner: https://github.com/actions/runner
+          - Original Azure Pipelines Agent: https://github.com/microsoft/azure-pipelines-agent
           - .NET RISC-V Port: https://github.com/filipnavara/dotnet-riscv
-        files: _package/actions-runner-linux-riscv64-*.tar.gz
+        files: azure-pipelines-agent/_package/vsts-agent-linux-riscv64-*.tar.gz
         draft: false
         prerelease: false
         fail_on_unmatched_files: true
