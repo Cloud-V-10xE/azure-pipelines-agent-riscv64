@@ -33,6 +33,7 @@ jobs:
     
     - name: Download and setup .NET 10.0.102 SDK
       run: |
+        cd azure-pipelines-agent
         wget -q -O dotnet.tar.gz https://github.com/filipnavara/dotnet-riscv/releases/download/10.0.102/dotnet-sdk-10.0.102-linux-riscv64.tar.gz
         mkdir -p _dotnetsdk/10.0.102
         tar -xf dotnet.tar.gz -C _dotnetsdk/10.0.102
@@ -41,6 +42,7 @@ jobs:
         echo "DOTNET_ROOT=$PWD/_dotnetsdk/10.0.102" >> $GITHUB_ENV
     - name: Create net8.0 runtime packs from net10.0
       run: |
+        cd azure-pipelines-agent
         echo "=== Creating net8.0 runtime packs for RISC-V ==="
         
         SDK_ROOT="_dotnetsdk/10.0.102"
@@ -89,6 +91,7 @@ jobs:
         echo "✅ net8.0 runtime packs created successfully"
     - name: Check for global.json and update if needed
       run: |
+        cd azure-pipelines-agent
         echo "=== Checking for global.json files ==="
         find . -name "global.json" -type f
         
@@ -100,12 +103,14 @@ jobs:
 
     - name: Patch dev.sh for RISC-V and .NET 10
       run: |
+        cd azure-pipelines-agent
         cd src
         sed -i 's/DOTNETSDK_VERSION="8.0.417"/DOTNETSDK_VERSION="10.0.102"/' dev.sh
         sed -i 's/("$RUNTIME_ID" != '\''linux-arm'\'')/("$RUNTIME_ID" != '\''linux-arm'\'') \&\& ("$RUNTIME_ID" != '\''linux-riscv64'\'')/' dev.sh
         sed -i '/aarch64) RUNTIME_ID="linux-arm64";;/a\            riscv64) RUNTIME_ID="linux-riscv64";;' dev.sh
     - name: Patch SelfUpdater and SelfUpdaterV2 to disable auto-update for RISC-V
       run: |
+        cd azure-pipelines-agent
         echo "=== Patching SelfUpdater.cs ==="
         UPDATER_V1="src/Runner.Listener/SelfUpdater.cs"
 
@@ -182,6 +187,7 @@ jobs:
 
     - name: Add linux-riscv64 to RuntimeIdentifiers
       run: |
+        cd azure-pipelines-agent
         find src -name "*.csproj" -type f | while read csproj; do
           if grep -q "<RuntimeIdentifiers>" "$csproj"; then
             if ! grep "<RuntimeIdentifiers>" "$csproj" | grep -q "linux-riscv64"; then
@@ -191,6 +197,7 @@ jobs:
         done
     - name: Patch VarUtil to detect RISC-V architecture
       run: |
+        cd azure-pipelines-agent
         VARUTIL_FILE="src/Runner.Common/Util/VarUtil.cs"
         
         # Backup the file
@@ -206,6 +213,7 @@ jobs:
         echo "✅ Patched VarUtil.cs to detect RISC-V at runtime"
     - name: Register linux-riscv64 for net8.0
       run: |
+        cd azure-pipelines-agent
         echo "=== Patching Microsoft.NETCoreSdk.BundledVersions.props for linux-riscv64 net8.0 support ==="
         
         PROPS_FILE="_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
@@ -241,11 +249,13 @@ jobs:
 
     - name: Build with Self-Contained
       run: |
+        cd azure-pipelines-agent
         cd src
         echo "=== Building Self-Contained Runner ==="
         ./dev.sh layout Release linux-riscv64
     - name: Download and setup Node.js 20 and 24 for RISC-V
       run: |
+        cd azure-pipelines-agent
         echo "=== Setting up Node.js for RISC-V ==="
         
         # Create externals directory
@@ -309,6 +319,7 @@ jobs:
         echo "Node.js 24: $NODE24_VERSION"
     - name: Verify Build Output
       run: |
+        cd azure-pipelines-agent
         echo "=== Verifying Build Output ==="
         
         for app in "Runner.Listener" "Runner.Worker" "Runner.PluginHost"; do
@@ -340,6 +351,7 @@ jobs:
 
     - name: Test Runner Execution
       run: |
+        cd azure-pipelines-agent
         echo "=== Testing Runner Execution ==="
         
         cd _layout/bin
@@ -367,12 +379,14 @@ jobs:
 
     - name: Package
       run: |
+        cd azure-pipelines-agent
         cd src
         ./dev.sh package Release linux-riscv64
     
     - name: Check Version
       id: check-version
       run: |
+        cd azure-pipelines-agent
         if [ -f "_layout/bin/Runner.Listener" ]; then
           RUNNER_VERSION=$(_layout/bin/Runner.Listener --version 2>/dev/null || cat src/runnerversion)
         else
@@ -384,6 +398,7 @@ jobs:
     - name: Set tag name
       id: set-tag
       run: |
+        cd azure-pipelines-agent
         TAG_NAME="v${{ steps.check-version.outputs.runner_version }}-riscv64-net8"
         echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
@@ -395,6 +410,7 @@ jobs:
 
     - name: Create or verify tag
       run: |
+        cd azure-pipelines-agent
         TAG="${{ steps.set-tag.outputs.tag_name }}"
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
