@@ -110,41 +110,10 @@ jobs:
         sed -i '/aarch64) RUNTIME_ID="linux-arm64";;/a\            riscv64) RUNTIME_ID="linux-riscv64";;' dev.sh
     - name: Patch SelfUpdater to disable auto-update for RISC-V
       run: |
-        cd azure-pipelines-agent
-        echo "=== Patching SelfUpdater.cs ==="
-        UPDATER_V1="src/Agent.Listener/SelfUpdater.cs"
-
-        python3 - "$UPDATER_V1" <<'PYEOF'
-        import sys, re
-            
-        path = sys.argv[1]
-        with open(path) as f:
-            content = f.read()
-        
-        pattern = r'(private async Task<bool> UpdateNeeded\([^)]*\)\s*\{)'
-        replacement = r'''\1
-                    // Auto-update disabled: no linux-riscv64 package exists on releases
-                    Trace.Info($"Auto-update disabled for RISC-V build. Skipping update check.");
-                    return false;
-        #pragma warning disable CS0162'''
-        
-        new_content, n = re.subn(pattern, replacement, content, count=1)
-        
-        if n == 0:
-            print("ERROR: Could not find UpdateNeeded() method in SelfUpdater.cs")
-            for i, line in enumerate(content.splitlines()):
-                if 'UpdateNeeded' in line:
-                    print(f"  Line {i+1}: {line}")
-            sys.exit(1)
-                
-        with open(path, 'w') as f:
-            f.write(new_content)
-        
-        print("✅ Patched SelfUpdater.cs")
-        PYEOF
+        python3 scripts/patch_self_updater.py azure-pipelines-agent/src/Agent.Listener/SelfUpdater.cs
           
         echo "=== Verifying patch ==="
-        grep -A 6 "private async Task<bool> UpdateNeeded" src/Agent.Listener/SelfUpdater.cs | head -10
+        grep -A 6 "private async Task<bool> UpdateNeeded" azure-pipelines-agent/src/Agent.Listener/SelfUpdater.cs | head -10
 
     - name: Add linux-riscv64 to RuntimeIdentifiers
       run: |
@@ -158,108 +127,18 @@ jobs:
         done
     - name: Patch VarUtil to detect RISC-V architecture
       run: |
-        cd azure-pipelines-agent
-        
-        VARUTIL_FILE="src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs"
-
-        # Backup the file
-        cp "$VARUTIL_FILE" "${VARUTIL_FILE}.backup"
-        python3 - "$VARUTIL_FILE" <<'PYEOF'
-        import sys, re
-
-        path = sys.argv[1]
-        with open(path) as f:
-            content = f.read()
-        
-        # Add RiscV64 case before the closing brace of the switch
-        pattern = r'(case Architecture\.Arm64:\s*\n\s*return "ARM64";)'
-        replacement = r'\1\n                case Architecture.RiscV64:\n                    return "RISCV64";'
-        
-        new_content, n = re.subn(pattern, replacement, content, count=1)
-        
-        if n == 0:
-            print("ERROR: Could not find Arm64 case in VarUtil.cs")
-            for i, line in enumerate(content.splitlines()):
-                if 'Architecture' in line:
-                    print(f"  Line {i+1}: {line}")
-            sys.exit(1)
-                
-        with open(path, 'w') as f:
-            f.write(new_content)
-        
-        print("✅ Patched VarUtil.cs with RiscV64 case")
-        PYEOF
-
+        python3 scripts/patch_var_util.py azure-pipelines-agent/src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
 
         echo "Verifying patch:"
-        grep -n "RiscV64\|Arm64\|OSArchitecture" src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
+        grep -n "RiscV64\|Arm64\|OSArchitecture" azure-pipelines-agent/src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
 
-        
-        # Add RISC-V runtime detection at the start of OSArchitecture getter
-        # This checks at runtime and returns RISCV64 before the switch statement
-        
         echo "✅ Patched VarUtil.cs to detect RISC-V at runtime"
     - name: Register linux-riscv64 for net8.0
       run: |
-        cd azure-pipelines-agent
-        echo "=== Patching Microsoft.NETCoreSdk.BundledVersions.props for linux-riscv64 net8.0 support ==="
-        
-        PROPS_FILE="_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
-        cp "$PROPS_FILE" "${PROPS_FILE}.backup"
-        
-        echo "Original net8.0 AppHostRuntimeIdentifiers:"
-        grep 'AppHostRuntimeIdentifiers.*freebsd-arm64"' "$PROPS_FILE" | head -1
-        
-        echo "Original net8.0 RuntimePackRuntimeIdentifiers:"
-        grep 'RuntimePackRuntimeIdentifiers.*freebsd-arm64"' "$PROPS_FILE" | head -1
-        
-        # Add linux-riscv64 to net8.0 KnownAppHostPack
-        sed -i '0,/AppHostRuntimeIdentifiers=.*freebsd-arm64"/{s/freebsd-arm64"/freebsd-arm64;linux-riscv64;linux-musl-riscv64"/}' "$PROPS_FILE"
-        
-        # Add linux-riscv64 to net8.0 KnownRuntimePack
-        sed -i '0,/RuntimePackRuntimeIdentifiers=.*freebsd-arm64"/{s/freebsd-arm64"/freebsd-arm64;linux-riscv64;linux-musl-riscv64"/}' "$PROPS_FILE"
-        
-        echo ""
-        echo "Patched net8.0 AppHostRuntimeIdentifiers:"
-        grep 'AppHostRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE" | head -1
-        
-        echo "Patched net8.0 RuntimePackRuntimeIdentifiers:"
-        grep 'RuntimePackRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE" | head -1
-        
-        if grep -q 'RuntimePackRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE"; then
-          echo ""
-          echo "✅ SUCCESS: linux-riscv64 has been added to net8.0 runtime and apphost support"
-        else
-          echo ""
-          echo "❌ ERROR: Failed to add linux-riscv64"
-          exit 1
-        fi
+        python3 scripts/patch_bundled_versions.py "azure-pipelines-agent/_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
     - name: Patch PlatformUtil to add IsRiscV64
       run: |
-        cd azure-pipelines-agent
-        PLATFORM_FILE="src/Agent.Sdk/Util/PlatformUtil.cs"
-
-        python3 - "$PLATFORM_FILE" <<'PYEOF'
-        import sys, re
-                
-        path = sys.argv[1]
-        with open(path) as f:
-            content = f.read()
-        
-        pattern = r'(public static bool IsArm64 => PlatformUtil\.HostArchitecture == Architecture\.Arm64;)'
-        replacement = r'\1\n\n        public static bool IsRiscV64 => PlatformUtil.HostArchitecture == Architecture.RiscV64;  '
-        
-        new_content, n = re.subn(pattern, replacement, content, count=1)
-        
-        if n == 0:
-            print("WARNING: Could not find IsArm64 property - skipping")
-            sys.exit(0)
-        
-        with open(path, 'w') as f:
-            f.write(new_content)
-        
-        print("✅ Patched PlatformUtil.cs with IsRiscV64")
-        PYEOF
+        python3 scripts/patch_platform_util.py azure-pipelines-agent/src/Agent.Sdk/Util/PlatformUtil.cs
     - name: Build with Self-Contained
       run: |
         cd azure-pipelines-agent
