@@ -1,0 +1,467 @@
+name: Build Azure Pipeline agent for RISC-V
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-riscv
+    permissions:
+      contents: write
+    
+    outputs:
+      version-number: ${{ steps.check-version.outputs.runner_version }}
+      tag-name: ${{ steps.set-tag.outputs.tag_name }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+    
+    - name: Clone Upstream
+      run: |
+        git clone --depth 1 --branch main https://github.com/microsoft/azure-pipelines-agent.git
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblttng-ust-dev libkrb5-dev zlib1g-dev libicu-dev \
+          libssl-dev libcurl4-openssl-dev libelf-dev libunwind-dev pkg-config wget tar libatomic1 \
+          patchelf binutils file
+    
+    - name: Download and setup .NET 10.0.102 SDK
+      run: |
+        wget -q -O dotnet.tar.gz https://github.com/filipnavara/dotnet-riscv/releases/download/10.0.102/dotnet-sdk-10.0.102-linux-riscv64.tar.gz
+        mkdir -p _dotnetsdk/10.0.102
+        tar -xf dotnet.tar.gz -C _dotnetsdk/10.0.102
+        echo "10.0.102" > _dotnetsdk/10.0.102/.10.0.102
+        echo "$PWD/_dotnetsdk/10.0.102" >> $GITHUB_PATH
+        echo "DOTNET_ROOT=$PWD/_dotnetsdk/10.0.102" >> $GITHUB_ENV
+    - name: Create net8.0 runtime packs from net10.0
+      run: |
+        echo "=== Creating net8.0 runtime packs for RISC-V ==="
+        
+        SDK_ROOT="_dotnetsdk/10.0.102"
+        PACKS_DIR="$SDK_ROOT/packs"
+        
+        # Find the net10.0 versions
+        NET10_RUNTIME_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/" | head -1)
+        NET10_HOST_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/" | head -1)
+        NET10_ASPNET_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/" | head -1)
+        
+        echo "Found net10.0 runtime version: $NET10_RUNTIME_VERSION"
+        echo "Found net10.0 host version: $NET10_HOST_VERSION"
+        echo "Found net10.0 aspnet version: $NET10_ASPNET_VERSION"
+        
+        # Use version 8.0.23 to match SDK expectations (check LatestRuntimeFrameworkVersion in props)
+        NET8_VERSION="8.0.23"
+        
+        # Copy NETCore.App runtime pack
+        if [ ! -d "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION" ]; then
+          echo "Creating Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION"
+          cp -r "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET10_RUNTIME_VERSION" \
+                "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION"
+        fi
+        
+        # Copy NETCore.App host pack
+        if [ ! -d "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION" ]; then
+          echo "Creating Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION"
+          cp -r "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET10_HOST_VERSION" \
+                "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION"
+        fi
+        
+        # Copy AspNetCore runtime pack
+        if [ ! -d "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION" ]; then
+          echo "Creating Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION"
+          cp -r "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET10_ASPNET_VERSION" \
+                "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION"
+        fi
+        
+        echo ""
+        echo "Verifying created packs:"
+        ls -la "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/" || true
+        ls -la "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/" || true
+        ls -la "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/" || true
+        
+        echo ""
+        echo "✅ net8.0 runtime packs created successfully"
+    - name: Check for global.json and update if needed
+      run: |
+        echo "=== Checking for global.json files ==="
+        find . -name "global.json" -type f
+        
+        for json_file in $(find . -name "global.json" -type f); do
+          if grep -q "sdk" "$json_file"; then
+            sed -i 's/"version".*:.*"[0-9].*"/"version": "10.0.102"/g' "$json_file"
+          fi
+        done
+
+    - name: Patch dev.sh for RISC-V and .NET 10
+      run: |
+        cd src
+        sed -i 's/DOTNETSDK_VERSION="8.0.417"/DOTNETSDK_VERSION="10.0.102"/' dev.sh
+        sed -i 's/("$RUNTIME_ID" != '\''linux-arm'\'')/("$RUNTIME_ID" != '\''linux-arm'\'') \&\& ("$RUNTIME_ID" != '\''linux-riscv64'\'')/' dev.sh
+        sed -i '/aarch64) RUNTIME_ID="linux-arm64";;/a\            riscv64) RUNTIME_ID="linux-riscv64";;' dev.sh
+    - name: Patch SelfUpdater and SelfUpdaterV2 to disable auto-update for RISC-V
+      run: |
+        echo "=== Patching SelfUpdater.cs ==="
+        UPDATER_V1="src/Runner.Listener/SelfUpdater.cs"
+
+        python3 - "$UPDATER_V1" <<'PYEOF'
+        import sys, re
+        
+        path = sys.argv[1]
+        with open(path) as f:
+            content = f.read()
+        
+        pattern = r'(private async Task<bool> UpdateNeeded\([^)]*\)\s*\{)'
+        replacement = r'''\1
+                    // Auto-update disabled: no linux-riscv64 package exists on GitHub releases
+                    Trace.Info($"Auto-update disabled for RISC-V build. Skipping update check.");
+                    return false;
+        #pragma warning disable CS0162'''
+        
+        new_content, n = re.subn(pattern, replacement, content, count=1)
+        
+        if n == 0:
+            print("ERROR: Could not find UpdateNeeded() method in SelfUpdater.cs")
+            for i, line in enumerate(content.splitlines()):
+                if 'UpdateNeeded' in line:
+                    print(f"  Line {i+1}: {line}")
+            sys.exit(1)
+                
+        with open(path, 'w') as f:
+            f.write(new_content)
+        
+        print("✅ Patched SelfUpdater.cs")
+        PYEOF
+    
+        echo ""
+        echo "=== Patching SelfUpdaterV2.cs ==="
+        UPDATER_V2="src/Runner.Listener/SelfUpdaterV2.cs"
+    
+        python3 - "$UPDATER_V2" <<'PYEOF'
+        import sys, re
+        
+        path = sys.argv[1]
+        with open(path) as f:
+            content = f.read()
+        
+        pattern = r'(Busy = true;\s*try\s*\{)'
+        replacement = r'''\1
+                    // Auto-update disabled: no linux-riscv64 package exists on GitHub releases
+                    Trace.Info($"Auto-update disabled for RISC-V build. Skipping update.");
+                    Busy = false;
+                    return false;
+        #pragma warning disable CS0162'''
+        
+        new_content, n = re.subn(pattern, replacement, content, count=1)
+        
+        if n == 0:
+            print("ERROR: Could not find patch location in SelfUpdaterV2.cs")
+            for i, line in enumerate(content.splitlines()):
+                if 'Busy' in line or 'SelfUpdate' in line:
+                    print(f"  Line {i+1}: {line}")
+            sys.exit(1)
+                
+        with open(path, 'w') as f:
+            f.write(new_content)
+        
+        print("✅ Patched SelfUpdaterV2.cs")
+        PYEOF
+    
+        echo ""
+        echo "=== Verifying patches ==="
+        echo "--- SelfUpdater.cs ---"
+        grep -A 6 "private async Task<bool> UpdateNeeded" src/Runner.Listener/SelfUpdater.cs | head -10
+        echo ""
+        echo "--- SelfUpdaterV2.cs ---"
+        grep -A 7 "Busy = true;" src/Runner.Listener/SelfUpdaterV2.cs | head -12
+
+    - name: Add linux-riscv64 to RuntimeIdentifiers
+      run: |
+        find src -name "*.csproj" -type f | while read csproj; do
+          if grep -q "<RuntimeIdentifiers>" "$csproj"; then
+            if ! grep "<RuntimeIdentifiers>" "$csproj" | grep -q "linux-riscv64"; then
+              sed -i 's/<RuntimeIdentifiers>\(.*\)<\/RuntimeIdentifiers>/<RuntimeIdentifiers>\1;linux-riscv64<\/RuntimeIdentifiers>/' "$csproj"
+            fi
+          fi
+        done
+    - name: Patch VarUtil to detect RISC-V architecture
+      run: |
+        VARUTIL_FILE="src/Runner.Common/Util/VarUtil.cs"
+        
+        # Backup the file
+        cp "$VARUTIL_FILE" "${VARUTIL_FILE}.backup"
+        
+        # Add RISC-V runtime detection at the start of OSArchitecture getter
+        # This checks at runtime and returns RISCV64 before the switch statement
+        sed -i '/get$/,/switch (Constants.Runner.PlatformArchitecture)/ {
+          /switch (Constants.Runner.PlatformArchitecture)/ i\                var arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString();\
+                if (arch.Contains("RiscV", System.StringComparison.OrdinalIgnoreCase)) { return "RISCV64"; }
+        }' "$VARUTIL_FILE"
+        
+        echo "✅ Patched VarUtil.cs to detect RISC-V at runtime"
+    - name: Register linux-riscv64 for net8.0
+      run: |
+        echo "=== Patching Microsoft.NETCoreSdk.BundledVersions.props for linux-riscv64 net8.0 support ==="
+        
+        PROPS_FILE="_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
+        cp "$PROPS_FILE" "${PROPS_FILE}.backup"
+        
+        echo "Original net8.0 AppHostRuntimeIdentifiers:"
+        grep 'AppHostRuntimeIdentifiers.*freebsd-arm64"' "$PROPS_FILE" | head -1
+        
+        echo "Original net8.0 RuntimePackRuntimeIdentifiers:"
+        grep 'RuntimePackRuntimeIdentifiers.*freebsd-arm64"' "$PROPS_FILE" | head -1
+        
+        # Add linux-riscv64 to net8.0 KnownAppHostPack
+        sed -i '0,/AppHostRuntimeIdentifiers=.*freebsd-arm64"/{s/freebsd-arm64"/freebsd-arm64;linux-riscv64;linux-musl-riscv64"/}' "$PROPS_FILE"
+        
+        # Add linux-riscv64 to net8.0 KnownRuntimePack
+        sed -i '0,/RuntimePackRuntimeIdentifiers=.*freebsd-arm64"/{s/freebsd-arm64"/freebsd-arm64;linux-riscv64;linux-musl-riscv64"/}' "$PROPS_FILE"
+        
+        echo ""
+        echo "Patched net8.0 AppHostRuntimeIdentifiers:"
+        grep 'AppHostRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE" | head -1
+        
+        echo "Patched net8.0 RuntimePackRuntimeIdentifiers:"
+        grep 'RuntimePackRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE" | head -1
+        
+        if grep -q 'RuntimePackRuntimeIdentifiers.*linux-riscv64' "$PROPS_FILE"; then
+          echo ""
+          echo "✅ SUCCESS: linux-riscv64 has been added to net8.0 runtime and apphost support"
+        else
+          echo ""
+          echo "❌ ERROR: Failed to add linux-riscv64"
+          exit 1
+        fi
+
+    - name: Build with Self-Contained
+      run: |
+        cd src
+        echo "=== Building Self-Contained Runner ==="
+        ./dev.sh layout Release linux-riscv64
+    - name: Download and setup Node.js 20 and 24 for RISC-V
+      run: |
+        echo "=== Setting up Node.js for RISC-V ==="
+        
+        # Create externals directory
+        mkdir -p _layout/externals
+        
+        # ============================================
+        # Download and setup Node.js 20
+        # ============================================
+        echo ""
+        echo "--- Setting up Node.js 20 for RISC-V ---"
+        mkdir -p _layout/externals/node20
+        
+        NODE20_URL="https://unofficial-builds.nodejs.org/download/release/v20.9.0/node-v20.9.0-linux-riscv64.tar.gz"
+        echo "Downloading Node.js 20 from: $NODE20_URL"
+        
+        wget -q -O node20-riscv64.tar.gz "$NODE20_URL"
+        
+        # Extract Node.js 20
+        tar -xzf node20-riscv64.tar.gz -C _layout/externals/node20 --strip-components=1
+        rm node20-riscv64.tar.gz
+        
+        # Verify Node.js 20
+        if [ -f "_layout/externals/node20/bin/node" ]; then
+          chmod +x _layout/externals/node20/bin/node
+          NODE20_VERSION=$(_layout/externals/node20/bin/node --version)
+          echo "✅ Node.js 20 installed: $NODE20_VERSION"
+        else
+          echo "❌ Node.js 20 installation failed!"
+          exit 1
+        fi
+        
+        # ============================================
+        # Download and setup Node.js 24
+        # ============================================
+        echo ""
+        echo "--- Setting up Node.js 24 for RISC-V ---"
+        mkdir -p _layout/externals/node24
+        
+        NODE24_URL="https://github.com/alitariq4589/nodejs-riscv/releases/download/v24.7.0/nodejs-24.7.0-riscv64-linux.tar.gz"
+        echo "Downloading Node.js 24 from: $NODE24_URL"
+        
+        wget -q -O node24-riscv64.tar.gz "$NODE24_URL"
+        
+        # Extract Node.js 24
+        tar -xzf node24-riscv64.tar.gz -C _layout/externals/node24 --strip-components=1
+        rm node24-riscv64.tar.gz
+        
+        # Verify Node.js 24
+        if [ -f "_layout/externals/node24/bin/node" ]; then
+          chmod +x _layout/externals/node24/bin/node
+          NODE24_VERSION=$(_layout/externals/node24/bin/node --version)
+          echo "✅ Node.js 24 installed: $NODE24_VERSION"
+        else
+          echo "❌ Node.js 24 installation failed!"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== Node.js Setup Complete ==="
+        echo "Node.js 20: $NODE20_VERSION"
+        echo "Node.js 24: $NODE24_VERSION"
+    - name: Verify Build Output
+      run: |
+        echo "=== Verifying Build Output ==="
+        
+        for app in "Runner.Listener" "Runner.Worker" "Runner.PluginHost"; do
+          BIN_PATH="_layout/bin/$app"
+          DLL_PATH="_layout/bin/${app}.dll"
+          
+          echo ""
+          echo "Checking $app..."
+          
+          if [ -f "$BIN_PATH" ]; then
+            if file "$BIN_PATH" | grep -q "ELF.*RISC-V"; then
+              echo "  ✅ Native ELF binary exists"
+              ls -lh "$BIN_PATH"
+            else
+              echo "  ⚠️  Binary exists but may not be ELF"
+              file "$BIN_PATH"
+            fi
+          else
+            echo "  ℹ️  No native binary (expected if UseAppHost=false)"
+          fi
+          
+          if [ -f "$DLL_PATH" ]; then
+            echo "  ✅ DLL exists"
+          else
+            echo "  ❌ DLL missing!"
+            exit 1
+          fi
+        done
+
+    - name: Test Runner Execution
+      run: |
+        echo "=== Testing Runner Execution ==="
+        
+        cd _layout/bin
+        
+        if [ -f "Runner.Listener" ]; then
+          echo "Testing native binary..."
+          if ./Runner.Listener --version; then
+            echo "✅ Native binary executed successfully!"
+          else
+            echo "❌ Native binary execution failed"
+            exit 1
+          fi
+        elif [ -f "Runner.Listener.dll" ]; then
+          echo "Testing DLL with dotnet..."
+          if dotnet Runner.Listener.dll --version; then
+            echo "✅ DLL executed successfully!"
+          else
+            echo "❌ DLL execution failed"
+            exit 1
+          fi
+        else
+          echo "❌ No executable found!"
+          exit 1
+        fi
+
+    - name: Package
+      run: |
+        cd src
+        ./dev.sh package Release linux-riscv64
+    
+    - name: Check Version
+      id: check-version
+      run: |
+        if [ -f "_layout/bin/Runner.Listener" ]; then
+          RUNNER_VERSION=$(_layout/bin/Runner.Listener --version 2>/dev/null || cat src/runnerversion)
+        else
+          RUNNER_VERSION=$(cat src/runnerversion)
+        fi
+        echo "The Github runner version is $RUNNER_VERSION"
+        echo "runner_version=$RUNNER_VERSION" >> $GITHUB_OUTPUT
+
+    - name: Set tag name
+      id: set-tag
+      run: |
+        TAG_NAME="v${{ steps.check-version.outputs.runner_version }}-riscv64-net8"
+        echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}
+        path: "_package/actions-runner-linux-riscv64-*.tar.gz"
+
+    - name: Create or verify tag
+      run: |
+        TAG="${{ steps.set-tag.outputs.tag_name }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+          echo "✅ Tag $TAG already exists. Will update release if needed." 
+        else
+          echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+          git tag "$TAG"
+          git push origin "$TAG"
+        fi
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.set-tag.outputs.tag_name }}
+        name: "GitHub Actions Runner ${{ steps.check-version.outputs.runner_version }} for RISC-V (net8.0)"
+        body: |
+          # GitHub Actions Runner for RISC-V
+          
+          **Version:** ${{ steps.check-version.outputs.runner_version }}
+          **Architecture:** linux-riscv64
+          **Target Framework:** net8.0
+          **Build Date:** ${{ github.event.head_commit.timestamp }}
+          
+          ## ✅ Build Details
+          
+          This build uses .NET 10.0.102 SDK with a patched configuration to enable AppHost support for net8.0 on RISC-V architecture.
+          
+          **Key Features:**
+          - Self-contained deployment with bundled .NET runtime
+          - Native ELF executables (if AppHost generation succeeded)
+          - No separate .NET installation required
+          
+          ### Installation
+          ```bash
+          # Download and extract
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.set-tag.outputs.tag_name }}/actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}.tar.gz
+          mkdir actions-runner && cd actions-runner
+          tar xzf ../actions-runner-linux-riscv64-${{ steps.check-version.outputs.runner_version }}.tar.gz
+          
+          # Configure
+          ./config.sh --url https://github.com/YOUR-ORG/YOUR-REPO --token YOUR-TOKEN
+          
+          # Run
+          ./run.sh
+          ```
+          
+          ### System Requirements
+          
+          - RISC-V 64-bit processor
+          - Linux operating system
+          - Standard system libraries (libc, libssl, etc.)
+          
+          ### Technical Details
+          
+          - **SDK Version:** .NET 10.0.102 (RISC-V build by filipnavara)
+          - **Target Framework:** net8.0
+          - **Runtime Identifier:** linux-riscv64
+          - **Deployment Mode:** Self-Contained
+          - **AppHost:** Patched SDK to enable net8.0 support
+          
+          ### Credits
+          
+          - Original GitHub Actions Runner: https://github.com/actions/runner
+          - .NET RISC-V Port: https://github.com/filipnavara/dotnet-riscv
+        files: _package/actions-runner-linux-riscv64-*.tar.gz
+        draft: false
+        prerelease: false
+        fail_on_unmatched_files: true
