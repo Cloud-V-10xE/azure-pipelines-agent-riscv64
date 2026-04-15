@@ -85,7 +85,6 @@ jobs:
     - name: Patch dev.sh for RISC-V and .NET 10
       run: |
         cd azure-pipelines-agent
-        echo "$GITHUB_WORKSPACE"
         python3 $GITHUB_WORKSPACE/scripts/patch_dev_sh.py src/dev.sh
 
         # Make chmod calls non-fatal for missing apphost binaries
