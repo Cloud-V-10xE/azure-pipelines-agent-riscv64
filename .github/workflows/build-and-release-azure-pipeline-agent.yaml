@@ -98,7 +98,7 @@ jobs:
     - name: Patch externals.sh for RISC-V
       run: |
         cd azure-pipelines-agent
-        python3 scripts/patch_externals_sh.py src/Misc/externals.sh
+        python3 $GITHUB_WORKSPACE/scripts/patch_externals_sh.py src/Misc/externals.sh
         grep -q 'linux-riscv64' src/Misc/externals.sh \
           || { echo "❌ externals.sh patch failed"; exit 1; }
         echo "✅ externals.sh patched"
@@ -106,7 +106,7 @@ jobs:
     - name: Patch SelfUpdater to disable auto-update
       run: |
         cd azure-pipelines-agent
-        python3 scripts/patch_self_updater.py src/Agent.Listener/SelfUpdater.cs
+        python3 $GITHUB_WORKSPACE/scripts/patch_self_updater.py src/Agent.Listener/SelfUpdater.cs
         echo "✅ SelfUpdater.cs patched"
 
         echo "Verifying:"
@@ -129,7 +129,7 @@ jobs:
     - name: Patch VarUtil.cs for RISC-V architecture
       run: |
         cd azure-pipelines-agent
-        python3 scripts/patch_var_util.py \
+        python3 $GITHUB_WORKSPACE/scripts/patch_var_util.py \
           src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
         echo "✅ VarUtil.cs patched"
 
@@ -137,7 +137,7 @@ jobs:
       run: |
         cd azure-pipelines-agent
         PROPS_FILE="_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
-        python3 scripts/patch_bundled_versions.py "$PROPS_FILE"
+        python3 $GITHUB_WORKSPACE/scripts/patch_bundled_versions.py "$PROPS_FILE"
         grep -q 'linux-riscv64' "$PROPS_FILE" \
           || { echo "❌ BundledVersions patch failed"; exit 1; }
         echo "✅ BundledVersions.props patched"
@@ -145,7 +145,7 @@ jobs:
     - name: Patch PlatformUtil.cs for RISC-V
       run: |
         cd azure-pipelines-agent
-        python3 scripts/patch_platform_util.py src/Agent.Sdk/Util/PlatformUtil.cs
+        python3 $GITHUB_WORKSPACE/scripts/patch_platform_util.py src/Agent.Sdk/Util/PlatformUtil.cs
         echo "✅ PlatformUtil.cs patched"
 
     - name: Write NuGet.config and pre-seed packages
