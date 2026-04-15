@@ -30,7 +30,7 @@ fail() { echo "  ❌ $*"; exit 1; }
 # ============================================================
 [ -d "$AGENT_DIR" ] || fail "azure-pipelines-agent directory not found at $AGENT_DIR"
 [ -d "$SCRIPTS_DIR" ] || fail "scripts directory not found at $SCRIPTS_DIR"
-for s in patch_self_updater.py patch_var_util.py patch_bundled_versions.py patch_platform_util.py; do
+for s in patch_self_updater.py patch_var_util.py patch_bundled_versions.py patch_platform_util.py patch_runtimeconfig.py; do
   [ -f "$SCRIPTS_DIR/$s" ] || fail "Missing script: $SCRIPTS_DIR/$s"
 done
 
@@ -330,21 +330,9 @@ cp "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/"* "$LAYOUT/bin/shared/Microsof
 
 # Patch all runtimeconfig.json to request framework 10.0.2
 # (the app was compiled for net8.0 but .NET 10 can run it — forward compatible)
-find "$LAYOUT/bin" -name "*.runtimeconfig.json" -exec python3 -c "
-import sys, json
-for path in sys.argv[1:]:
-    with open(path) as f:
-        cfg = json.load(f)
-    opts = cfg.get('runtimeOptions', {})
-    # Convert from includedFrameworks (self-contained) to framework (framework-dependent)
-    if 'includedFrameworks' in opts:
-        del opts['includedFrameworks']
-    opts['framework'] = {'name': 'Microsoft.NETCore.App', 'version': '10.0.2'}
-    opts['rollForward'] = 'LatestMinor'
-    with open(path, 'w') as f:
-        json.dump(cfg, f, indent=2)
-    print(f'  Patched {path}')
-" {} +
+
+python3 "$SCRIPTS_DIR/patch_runtimeconfig.py" "$LAYOUT/bin"
+
 
 ok "Runtime bundled and runtimeconfig patched"
 
