@@ -234,21 +234,7 @@ jobs:
           fi
         done
 
-        # Patch runtimeconfig.json files to use bundled .NET 10 runtime
-        find "$LAYOUT/bin" -name "*.runtimeconfig.json" -exec python3 -c "
-        import sys, json
-        for path in sys.argv[1:]:
-            with open(path) as f:
-                cfg = json.load(f)
-            opts = cfg.get('runtimeOptions', {})
-            if 'includedFrameworks' in opts:
-                del opts['includedFrameworks']
-            opts['framework'] = {'name': 'Microsoft.NETCore.App', 'version': '10.0.2'}
-            opts['rollForward'] = 'LatestMinor'
-            with open(path, 'w') as f:
-                json.dump(cfg, f, indent=2)
-            print(f'  Patched {path}')
-        " {} +
+        python3 $GITHUB_WORKSPACE/scripts/patch_runtimeconfig.py "$LAYOUT/bin/" 
 
         echo "✅ Runtime bundled and runtimeconfig patched"
 
