@@ -1,9 +1,9 @@
-name: Build Azure Pipeline agent for RISC-V
+name: Build Azure Pipelines Agent for RISC-V
 
 on:
   push:
     branches:
-      - main
+      - riscv_build
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     runs-on: RISCV64
     permissions:
       contents: write
-    
+
     outputs:
       version-number: ${{ steps.check-version.outputs.agent_version }}
       tag-name: ${{ steps.set-tag.outputs.tag_name }}
@@ -19,278 +19,318 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v5
-    
-    - name: Clone Upstream
+
+    - name: Clone azure-pipelines-agent
       run: |
-        git clone --depth 1 --branch main https://github.com/microsoft/azure-pipelines-agent.git
-    
+        rm -rf azure-pipelines-agent
+        git clone --branch main https://github.com/microsoft/azure-pipelines-agent.git
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y liblttng-ust-dev libkrb5-dev zlib1g-dev libicu-dev \
           libssl-dev libcurl4-openssl-dev libelf-dev libunwind-dev pkg-config wget tar libatomic1 \
           patchelf binutils file
-    
+
     - name: Download and setup .NET 10.0.102 SDK
       run: |
         cd azure-pipelines-agent
-        wget -q -O dotnet.tar.gz https://github.com/filipnavara/dotnet-riscv/releases/download/10.0.102/dotnet-sdk-10.0.102-linux-riscv64.tar.gz
+        wget -q -O dotnet.tar.gz \
+          https://github.com/filipnavara/dotnet-riscv/releases/download/10.0.102/dotnet-sdk-10.0.102-linux-riscv64.tar.gz
         mkdir -p _dotnetsdk/10.0.102
         tar -xf dotnet.tar.gz -C _dotnetsdk/10.0.102
         echo "10.0.102" > _dotnetsdk/10.0.102/.10.0.102
+        rm dotnet.tar.gz
         echo "$PWD/_dotnetsdk/10.0.102" >> $GITHUB_PATH
         echo "DOTNET_ROOT=$PWD/_dotnetsdk/10.0.102" >> $GITHUB_ENV
+
     - name: Create net8.0 runtime packs from net10.0
       run: |
         cd azure-pipelines-agent
-        echo "=== Creating net8.0 runtime packs for RISC-V ==="
-        
         SDK_ROOT="_dotnetsdk/10.0.102"
         PACKS_DIR="$SDK_ROOT/packs"
-        
-        # Find the net10.0 versions
+
         NET10_RUNTIME_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/" | head -1)
-        NET10_HOST_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/" | head -1)
+        NET10_HOST_VERSION=$(ls -1   "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/"    | head -1)
         NET10_ASPNET_VERSION=$(ls -1 "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/" | head -1)
-        
-        echo "Found net10.0 runtime version: $NET10_RUNTIME_VERSION"
-        echo "Found net10.0 host version: $NET10_HOST_VERSION"
-        echo "Found net10.0 aspnet version: $NET10_ASPNET_VERSION"
-        
-        # Use version 8.0.23 to match SDK expectations (check LatestRuntimeFrameworkVersion in props)
+
+        echo "net10.0 runtime: $NET10_RUNTIME_VERSION"
+        echo "net10.0 host:    $NET10_HOST_VERSION"
+        echo "net10.0 aspnet:  $NET10_ASPNET_VERSION"
+
         NET8_VERSION="8.0.23"
-        
-        # Copy NETCore.App runtime pack
-        if [ ! -d "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION" ]; then
-          echo "Creating Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION"
-          cp -r "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET10_RUNTIME_VERSION" \
-                "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/$NET8_VERSION"
-        fi
-        
-        # Copy NETCore.App host pack
-        if [ ! -d "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION" ]; then
-          echo "Creating Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION"
-          cp -r "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET10_HOST_VERSION" \
-                "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/$NET8_VERSION"
-        fi
-        
-        # Copy AspNetCore runtime pack
-        if [ ! -d "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION" ]; then
-          echo "Creating Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION"
-          cp -r "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET10_ASPNET_VERSION" \
-                "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/$NET8_VERSION"
-        fi
-        
-        echo ""
-        echo "Verifying created packs:"
-        ls -la "$PACKS_DIR/Microsoft.NETCore.App.Runtime.linux-riscv64/" || true
-        ls -la "$PACKS_DIR/Microsoft.NETCore.App.Host.linux-riscv64/" || true
-        ls -la "$PACKS_DIR/Microsoft.AspNetCore.App.Runtime.linux-riscv64/" || true
-        
-        echo ""
-        echo "✅ net8.0 runtime packs created successfully"
-    - name: Check for global.json and update if needed
+        for pair in \
+          "Microsoft.NETCore.App.Runtime.linux-riscv64:$NET10_RUNTIME_VERSION" \
+          "Microsoft.NETCore.App.Host.linux-riscv64:$NET10_HOST_VERSION" \
+          "Microsoft.AspNetCore.App.Runtime.linux-riscv64:$NET10_ASPNET_VERSION"
+        do
+          PACK="${pair%%:*}"
+          SRC="${pair##*:}"
+          if [ ! -d "$PACKS_DIR/$PACK/$NET8_VERSION" ]; then
+            cp -r "$PACKS_DIR/$PACK/$SRC" "$PACKS_DIR/$PACK/$NET8_VERSION"
+            echo "✅ Created $PACK/$NET8_VERSION"
+          fi
+        done
+
+    - name: Patch global.json for SDK 10.0.102
       run: |
         cd azure-pipelines-agent
-        echo "=== Checking for global.json files ==="
-        find . -name "global.json" -type f
-        
-        for json_file in $(find . -name "global.json" -type f); do
+        find . -name "global.json" -type f | while read -r json_file; do
           if grep -q "sdk" "$json_file"; then
             sed -i 's/"version".*:.*"[0-9].*"/"version": "10.0.102"/g' "$json_file"
+            echo "Patched: $json_file"
           fi
         done
 
     - name: Patch dev.sh for RISC-V and .NET 10
       run: |
         cd azure-pipelines-agent
-        cd src
-        sed -i 's/DOTNETSDK_VERSION="8.0.417"/DOTNETSDK_VERSION="10.0.102"/' dev.sh
-        sed -i 's/("$RUNTIME_ID" != '\''linux-arm'\'')/("$RUNTIME_ID" != '\''linux-arm'\'') \&\& ("$RUNTIME_ID" != '\''linux-riscv64'\'')/' dev.sh
-        sed -i '/aarch64) RUNTIME_ID="linux-arm64";;/a\            riscv64) RUNTIME_ID="linux-riscv64";;' dev.sh
-    - name: Patch SelfUpdater to disable auto-update for RISC-V
+        python3 scripts/patch_dev_sh.py src/dev.sh
+
+        # Make chmod calls non-fatal for missing apphost binaries
+        sed -i '/chmod.*bin\/Agent\./s/$/ 2>\/dev\/null || true/' src/dev.sh
+
+        grep '_VALID_RIDS' src/dev.sh | grep -q 'linux-riscv64' \
+          || { echo "❌ _VALID_RIDS patch failed"; exit 1; }
+        echo "✅ dev.sh patched"
+
+    - name: Patch externals.sh for RISC-V
       run: |
-        python3 scripts/patch_self_updater.py azure-pipelines-agent/src/Agent.Listener/SelfUpdater.cs
-          
-        echo "=== Verifying patch ==="
-        grep -A 6 "private async Task<bool> UpdateNeeded" azure-pipelines-agent/src/Agent.Listener/SelfUpdater.cs | head -10
+        cd azure-pipelines-agent
+        python3 scripts/patch_externals_sh.py src/Misc/externals.sh
+        grep -q 'linux-riscv64' src/Misc/externals.sh \
+          || { echo "❌ externals.sh patch failed"; exit 1; }
+        echo "✅ externals.sh patched"
+
+    - name: Patch SelfUpdater to disable auto-update
+      run: |
+        cd azure-pipelines-agent
+        python3 scripts/patch_self_updater.py src/Agent.Listener/SelfUpdater.cs
+        echo "✅ SelfUpdater.cs patched"
+
+        echo "Verifying:"
+        grep -A 6 "private async Task<bool> UpdateNeeded" \
+          src/Agent.Listener/SelfUpdater.cs | head -10
 
     - name: Add linux-riscv64 to RuntimeIdentifiers
       run: |
         cd azure-pipelines-agent
-        find src -name "*.csproj" -type f | while read csproj; do
+        find src -name "*.csproj" -type f | while read -r csproj; do
           if grep -q "<RuntimeIdentifiers>" "$csproj"; then
             if ! grep "<RuntimeIdentifiers>" "$csproj" | grep -q "linux-riscv64"; then
               sed -i 's/<RuntimeIdentifiers>\(.*\)<\/RuntimeIdentifiers>/<RuntimeIdentifiers>\1;linux-riscv64<\/RuntimeIdentifiers>/' "$csproj"
+              echo "Patched: $csproj"
             fi
           fi
         done
-    - name: Patch VarUtil to detect RISC-V architecture
-      run: |
-        python3 scripts/patch_var_util.py azure-pipelines-agent/src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
+        echo "✅ csproj files patched"
 
-        echo "Verifying patch:"
-        grep -n "RiscV64\|Arm64\|OSArchitecture" azure-pipelines-agent/src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
-
-        echo "✅ Patched VarUtil.cs to detect RISC-V at runtime"
-    - name: Register linux-riscv64 for net8.0
-      run: |
-        python3 scripts/patch_bundled_versions.py "azure-pipelines-agent/_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
-    - name: Patch PlatformUtil to add IsRiscV64
-      run: |
-        python3 scripts/patch_platform_util.py azure-pipelines-agent/src/Agent.Sdk/Util/PlatformUtil.cs
-    - name: Build with Self-Contained
+    - name: Patch VarUtil.cs for RISC-V architecture
       run: |
         cd azure-pipelines-agent
-        cd src
-        echo "=== Building Self-Contained Runner ==="
-        ./dev.sh layout Release linux-riscv64
-    - name: Download and setup Node.js 20 and 24 for RISC-V
+        python3 scripts/patch_var_util.py \
+          src/Microsoft.VisualStudio.Services.Agent/Util/VarUtil.cs
+        echo "✅ VarUtil.cs patched"
+
+    - name: Register linux-riscv64 for net8.0 in BundledVersions.props
       run: |
         cd azure-pipelines-agent
-        echo "=== Setting up Node.js for RISC-V ==="
-        
-        # Create externals directory
-        mkdir -p _layout/externals
-        
-        # ============================================
-        # Download and setup Node.js 20
-        # ============================================
-        echo ""
-        echo "--- Setting up Node.js 20 for RISC-V ---"
-        mkdir -p _layout/externals/node20
-        
-        NODE20_URL="https://unofficial-builds.nodejs.org/download/release/v20.9.0/node-v20.9.0-linux-riscv64.tar.gz"
-        echo "Downloading Node.js 20 from: $NODE20_URL"
-        
-        wget -q -O node20-riscv64.tar.gz "$NODE20_URL"
-        
-        # Extract Node.js 20
-        tar -xzf node20-riscv64.tar.gz -C _layout/externals/node20 --strip-components=1
-        rm node20-riscv64.tar.gz
-        
-        # Verify Node.js 20
-        if [ -f "_layout/externals/node20/bin/node" ]; then
-          chmod +x _layout/externals/node20/bin/node
-          NODE20_VERSION=$(_layout/externals/node20/bin/node --version)
-          echo "✅ Node.js 20 installed: $NODE20_VERSION"
-        else
-          echo "❌ Node.js 20 installation failed!"
-          exit 1
-        fi
-        
-        # ============================================
-        # Download and setup Node.js 24
-        # ============================================
-        echo ""
-        echo "--- Setting up Node.js 24 for RISC-V ---"
-        mkdir -p _layout/externals/node24
-        
-        NODE24_URL="https://github.com/alitariq4589/nodejs-riscv/releases/download/v24.7.0/nodejs-24.7.0-riscv64-linux.tar.gz"
-        echo "Downloading Node.js 24 from: $NODE24_URL"
-        
-        wget -q -O node24-riscv64.tar.gz "$NODE24_URL"
-        
-        # Extract Node.js 24
-        tar -xzf node24-riscv64.tar.gz -C _layout/externals/node24 --strip-components=1
-        rm node24-riscv64.tar.gz
-        
-        # Verify Node.js 24
-        if [ -f "_layout/externals/node24/bin/node" ]; then
-          chmod +x _layout/externals/node24/bin/node
-          NODE24_VERSION=$(_layout/externals/node24/bin/node --version)
-          echo "✅ Node.js 24 installed: $NODE24_VERSION"
-        else
-          echo "❌ Node.js 24 installation failed!"
-          exit 1
-        fi
-        
-        echo ""
-        echo "=== Node.js Setup Complete ==="
-        echo "Node.js 20: $NODE20_VERSION"
-        echo "Node.js 24: $NODE24_VERSION"
+        PROPS_FILE="_dotnetsdk/10.0.102/sdk/10.0.102/Microsoft.NETCoreSdk.BundledVersions.props"
+        python3 scripts/patch_bundled_versions.py "$PROPS_FILE"
+        grep -q 'linux-riscv64' "$PROPS_FILE" \
+          || { echo "❌ BundledVersions patch failed"; exit 1; }
+        echo "✅ BundledVersions.props patched"
+
+    - name: Patch PlatformUtil.cs for RISC-V
+      run: |
+        cd azure-pipelines-agent
+        python3 scripts/patch_platform_util.py src/Agent.Sdk/Util/PlatformUtil.cs
+        echo "✅ PlatformUtil.cs patched"
+
+    - name: Write NuGet.config and pre-seed packages
+      run: |
+        cd azure-pipelines-agent
+        LOCAL_FEED_DIR="$PWD/_local_nuget_feed"
+        NUGET_PACKAGES_DIR="$PWD/_nuget_packages"
+        mkdir -p "$LOCAL_FEED_DIR" "$NUGET_PACKAGES_DIR"
+        echo "NUGET_PACKAGES=$NUGET_PACKAGES_DIR" >> $GITHUB_ENV
+
+        # Write fresh NuGet.config with correct feeds
+        cat > src/NuGet.config <<EOF
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+            <add key="nugetvssprivate" value="https://pkgs.dev.azure.com/mseng/PipelineTools/_packaging/nugetvssprivate/nuget/v3/index.json" protocolVersion="3" />
+            <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+            <add key="PipelineTools" value="https://pkgs.dev.azure.com/mseng/PipelineTools/_packaging/PipelineTools_PublicPackages/nuget/v3/index.json" protocolVersion="3" />
+            <add key="local-feed" value="${LOCAL_FEED_DIR}" />
+          </packageSources>
+          <disabledPackageSources />
+        </configuration>
+        EOF
+
+        # Pre-seed ref packs
+        for pkg in "microsoft.netcore.app.ref/8.0.23" "microsoft.aspnetcore.app.ref/8.0.23"; do
+          PKG_NAME="${pkg%%/*}"
+          PKG_VER="${pkg##*/}"
+          DEST="$NUGET_PACKAGES_DIR/$pkg"
+          NUPKG_FILE="$DEST/${PKG_NAME}.${PKG_VER}.nupkg"
+          if [ ! -f "$NUPKG_FILE" ]; then
+            mkdir -p "$DEST"
+            wget -q -O "$NUPKG_FILE" \
+              "https://api.nuget.org/v3-flatcontainer/${PKG_NAME}/${PKG_VER}/${PKG_NAME}.${PKG_VER}.nupkg"
+            unzip -q -o "$NUPKG_FILE" -d "$DEST"
+            openssl dgst -sha512 -binary "$NUPKG_FILE" | base64 -w 0 > "${NUPKG_FILE}.sha512"
+            echo "✅ Cached $pkg"
+          fi
+        done
+
+    - name: Inject Directory.Build.targets for linux-riscv64
+      run: |
+        cd azure-pipelines-agent
+        cat > src/Directory.Build.targets <<'EOF'
+        <Project>
+          <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'linux-riscv64'">
+            <UseAppHost>false</UseAppHost>
+            <SelfContained>false</SelfContained>
+          </PropertyGroup>
+        </Project>
+        EOF
+        echo "✅ Directory.Build.targets written"
+
+    - name: Build
+      run: |
+        cd azure-pipelines-agent/src
+        export DOTNET_MULTILEVEL_LOOKUP=0
+        export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+        ./dev.sh layout net8.0 Release linux-riscv64
+      env:
+        NUGET_PACKAGES: ${{ env.NUGET_PACKAGES }}
+
+    - name: Bundle .NET runtime into layout
+      run: |
+        cd azure-pipelines-agent
+        LAYOUT="_layout/linux-riscv64"
+        SDK_DIR="_dotnetsdk/10.0.102"
+
+        # Copy dotnet host
+        cp "$SDK_DIR/dotnet" "$LAYOUT/bin/"
+        chmod +x "$LAYOUT/bin/dotnet"
+
+        # Copy host resolver
+        mkdir -p "$LAYOUT/bin/host/fxr/10.0.2"
+        cp "$SDK_DIR/host/fxr/10.0.2/libhostfxr.so" "$LAYOUT/bin/host/fxr/10.0.2/"
+
+        # Copy shared framework
+        mkdir -p "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2"
+        cp "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/"* \
+          "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/" 2>/dev/null || true
+
+        # Symlink native libs into bin/ so config.sh ldd checks pass
+        for lib in libcoreclr.so libSystem.Security.Cryptography.Native.OpenSsl.so libSystem.IO.Compression.Native.so; do
+          if [ ! -f "$LAYOUT/bin/$lib" ] && [ -f "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/$lib" ]; then
+            ln -sf "shared/Microsoft.NETCore.App/10.0.2/$lib" "$LAYOUT/bin/$lib"
+          fi
+        done
+
+        # Patch runtimeconfig.json files to use bundled .NET 10 runtime
+        find "$LAYOUT/bin" -name "*.runtimeconfig.json" -exec python3 -c "
+        import sys, json
+        for path in sys.argv[1:]:
+            with open(path) as f:
+                cfg = json.load(f)
+            opts = cfg.get('runtimeOptions', {})
+            if 'includedFrameworks' in opts:
+                del opts['includedFrameworks']
+            opts['framework'] = {'name': 'Microsoft.NETCore.App', 'version': '10.0.2'}
+            opts['rollForward'] = 'LatestMinor'
+            with open(path, 'w') as f:
+                json.dump(cfg, f, indent=2)
+            print(f'  Patched {path}')
+        " {} +
+
+        echo "✅ Runtime bundled and runtimeconfig patched"
+
     - name: Verify Build Output
       run: |
         cd azure-pipelines-agent
         echo "=== Verifying Build Output ==="
-        
+
         for app in "Agent.Listener" "Agent.Worker" "Agent.PluginHost"; do
-          BIN_PATH="_layout/bin/$app"
-          DLL_PATH="_layout/bin/${app}.dll"
-          
+          DLL_PATH="_layout/linux-riscv64/bin/${app}.dll"
           echo ""
           echo "Checking $app..."
-          
-          if [ -f "$BIN_PATH" ]; then
-            if file "$BIN_PATH" | grep -q "ELF.*RISC-V"; then
-              echo "  ✅ Native ELF binary exists"
-              ls -lh "$BIN_PATH"
-            else
-              echo "  ⚠️  Binary exists but may not be ELF"
-              file "$BIN_PATH"
-            fi
-          else
-            echo "  ℹ️  No native binary (expected if UseAppHost=false)"
-          fi
-          
           if [ -f "$DLL_PATH" ]; then
-            echo "  ✅ DLL exists"
+            echo "  ✅ DLL exists: $DLL_PATH"
           else
-            echo "  ❌ DLL missing!"
+            echo "  ❌ DLL missing: $DLL_PATH"
             exit 1
           fi
         done
 
-    - name: Test Runner Execution
+        echo ""
+        echo "Checking bundled runtime..."
+        ls -lh _layout/linux-riscv64/bin/dotnet || { echo "❌ dotnet host missing"; exit 1; }
+        ls _layout/linux-riscv64/bin/shared/Microsoft.NETCore.App/10.0.2/libcoreclr.so \
+          || { echo "❌ libcoreclr.so missing"; exit 1; }
+        echo "✅ All verified"
+
+    - name: Test Agent Execution
+      run: |
+        cd azure-pipelines-agent/_layout/linux-riscv64/bin
+        export DOTNET_ROOT="$PWD"
+        echo "Testing with bundled dotnet..."
+        ./dotnet Agent.Listener.dll --version \
+          || { echo "❌ Agent execution failed"; exit 1; }
+        echo "✅ Agent executed successfully"
+
+    - name: Create launcher wrapper scripts
       run: |
         cd azure-pipelines-agent
-        echo "=== Testing Runner Execution ==="
-        
-        cd _layout/bin
-        
-        if [ -f "Agent.Listener" ]; then
-          echo "Testing native binary..."
-          if ./Agent.Listener --version; then
-            echo "✅ Native binary executed successfully!"
-          else
-            echo "❌ Native binary execution failed"
-            exit 1
-          fi
-        elif [ -f "Agent.Listener.dll" ]; then
-          echo "Testing DLL with dotnet..."
-          if dotnet Agent.Listener.dll --version; then
-            echo "✅ DLL executed successfully!"
-          else
-            echo "❌ DLL execution failed"
-            exit 1
-          fi
-        else
-          echo "❌ No executable found!"
-          exit 1
-        fi
+        LAYOUT="_layout/linux-riscv64"
+
+        for app in Agent.Listener Agent.Worker Agent.PluginHost; do
+          cat > "$LAYOUT/bin/$app" <<'WRAPPER'
+        #!/usr/bin/env bash
+        SOURCE="${BASH_SOURCE[0]}"
+        while [ -h "$SOURCE" ]; do
+          DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+          SOURCE="$(readlink "$SOURCE")"
+          [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+        done
+        DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+        export DOTNET_ROOT="$DIR"
+        exec "$DIR/dotnet" "$DIR/APPNAME.dll" "$@"
+        WRAPPER
+          sed -i "s/APPNAME/$app/g" "$LAYOUT/bin/$app"
+          chmod +x "$LAYOUT/bin/$app"
+        done
+        echo "✅ Launcher wrappers created"
 
     - name: Package
       run: |
-        cd azure-pipelines-agent
-        cd src
-        ./dev.sh package Release linux-riscv64
-    
+        cd azure-pipelines-agent/src
+        export DOTNET_MULTILEVEL_LOOKUP=0
+        ./dev.sh package net8.0 Release linux-riscv64
+
     - name: Check Version
       id: check-version
       run: |
         cd azure-pipelines-agent
-        if [ -f "_layout/bin/Agent.Listener" ]; then
-          AGENT_VERSION=$(_layout/bin/Agent.Listener --version 2>/dev/null || cat src/agentversion)
+        LAYOUT_BIN="_layout/linux-riscv64/bin"
+        if [ -f "$LAYOUT_BIN/Agent.Listener.dll" ]; then
+          export DOTNET_ROOT="$PWD/$LAYOUT_BIN"
+          AGENT_VERSION=$("$LAYOUT_BIN/dotnet" "$LAYOUT_BIN/Agent.Listener.dll" --version 2>/dev/null || cat src/agentversion)
         else
           AGENT_VERSION=$(cat src/agentversion)
         fi
-        echo "The Azure Pipelines agent version is $AGENT_VERSION"
+        echo "Azure Pipelines Agent version: $AGENT_VERSION"
         echo "agent_version=$AGENT_VERSION" >> $GITHUB_OUTPUT
 
     - name: Set tag name
       id: set-tag
       run: |
-        cd azure-pipelines-agent
         TAG_NAME="v${{ steps.check-version.outputs.agent_version }}-riscv64-net8"
         echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
@@ -298,7 +338,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}
-        path: "azure-pipelines-agent/_package/vsts-agent-linux-riscv64-*.tar.gz"
+        path: "azure-pipelines-agent/_package/*.tar.gz"
 
     - name: Create or verify tag
       run: |
@@ -307,9 +347,9 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
         if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-          echo "✅ Tag $TAG already exists. Will update release if needed." 
+          echo "✅ Tag $TAG already exists. Will update release if needed."
         else
-          echo "🆕 Tag $TAG does not exist. Creating and pushing..."
+          echo "🆕 Creating tag $TAG..."
           git tag "$TAG"
           git push origin "$TAG"
         fi
@@ -321,54 +361,55 @@ jobs:
         name: "Azure Pipelines Agent ${{ steps.check-version.outputs.agent_version }} for RISC-V (net8.0)"
         body: |
           # Azure Pipelines Agent for RISC-V
-          
+
           **Version:** ${{ steps.check-version.outputs.agent_version }}
           **Architecture:** linux-riscv64
           **Target Framework:** net8.0
           **Build Date:** ${{ github.event.head_commit.timestamp }}
-          
-          ## ✅ Build Details
-          
-          This build uses .NET 10.0.102 SDK with a patched configuration to enable AppHost support for net8.0 on RISC-V architecture.
-          
-          **Key Features:**
-          - Self-contained deployment with bundled .NET runtime
-          - Native ELF executables (if AppHost generation succeeded)
-          - No separate .NET installation required
-          
+
+          ## Build Details
+
+          Built with .NET 10.0.102 SDK (RISC-V port by filipnavara), targeting net8.0.
+          The agent bundles the .NET 10 runtime — no separate .NET installation required.
+
           ### Installation
+
           ```bash
           # Download and extract
+          mkdir azagent && cd azagent
           wget https://github.com/${{ github.repository }}/releases/download/${{ steps.set-tag.outputs.tag_name }}/vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}.tar.gz
-          mkdir actions-runner && cd actions-runner
-          tar xzf ../vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}.tar.gz
-          
+          tar xzf vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}.tar.gz
+
           # Configure
-          ./config.sh --url https://dev.azure.com/YOUR-ORG --auth pat --token YOUR-PAT --pool YOUR-POOL
-          
-          # Run
+          ./config.sh --url https://dev.azure.com/YOUR-ORG --auth pat --token YOUR-PAT
+
+          # Run interactively
           ./run.sh
+
+          # Or install as a service
+          sudo ./svc.sh install
+          sudo ./svc.sh start
           ```
-          
+
           ### System Requirements
-          
+
           - RISC-V 64-bit processor
-          - Linux operating system
-          - Standard system libraries (libc, libssl, etc.)
-          
+          - Linux operating system (Debian/Ubuntu recommended)
+          - Standard system libraries (libc, libssl, libicu, etc.)
+
           ### Technical Details
-          
+
           - **SDK Version:** .NET 10.0.102 (RISC-V build by filipnavara)
-          - **Target Framework:** net8.0
+          - **Target Framework:** net8.0 (runs on bundled .NET 10 runtime, forward-compatible)
           - **Runtime Identifier:** linux-riscv64
-          - **Deployment Mode:** Self-Contained
-          - **AppHost:** Patched SDK to enable net8.0 support
-          
+          - **Deployment Mode:** Framework-dependent with bundled runtime
+          - **Auto-update:** Disabled (no official RISC-V packages on releases)
+
           ### Credits
-          
-          - Original Azure Pipelines Agent: https://github.com/microsoft/azure-pipelines-agent
+
+          - Azure Pipelines Agent: https://github.com/microsoft/azure-pipelines-agent
           - .NET RISC-V Port: https://github.com/filipnavara/dotnet-riscv
-        files: azure-pipelines-agent/_package/vsts-agent-linux-riscv64-*.tar.gz
+        files: azure-pipelines-agent/_package/*.tar.gz
         draft: false
         prerelease: false
         fail_on_unmatched_files: true
