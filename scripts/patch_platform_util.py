@@ -5,7 +5,7 @@ with open(path) as f:
     content = f.read()
 
 pattern = r'(public static bool IsArm64 => PlatformUtil\.HostArchitecture == Architecture\.Arm64;)'
-replacement = r'\1\n\n        public static bool IsRiscV64 => PlatformUtil.HostArchitecture == Architecture.RiscV64;'
+replacement = r'\1\n\n        public static bool IsRiscV64 => PlatformUtil.HostArchitecture == (Architecture)9;'
 
 new_content, n = re.subn(pattern, replacement, content, count=1)
 if n == 0:

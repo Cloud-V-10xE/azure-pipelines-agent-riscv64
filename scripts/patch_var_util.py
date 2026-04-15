@@ -5,7 +5,7 @@ with open(path) as f:
     content = f.read()
 
 pattern = r'(case Architecture\.Arm64:\s*\n\s*return "ARM64";)'
-replacement = r'\1\n                case Architecture.RiscV64:\n                    return "RISCV64";'
+replacement = r'\1\n                case (Architecture)9:\n                    return "RISCV64";'
 
 new_content, n = re.subn(pattern, replacement, content, count=1)
 if n == 0:
