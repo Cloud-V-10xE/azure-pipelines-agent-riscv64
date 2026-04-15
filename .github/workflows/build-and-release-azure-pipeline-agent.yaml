@@ -3,7 +3,7 @@ name: Build Azure Pipelines Agent for RISC-V
 on:
   push:
     branches:
-      - riscv_build
+      - main
   workflow_dispatch:
 
 jobs:
