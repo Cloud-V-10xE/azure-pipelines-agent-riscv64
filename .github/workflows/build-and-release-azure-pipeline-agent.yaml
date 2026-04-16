@@ -325,7 +325,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: vsts-agent-linux-riscv64-${{ steps.check-version.outputs.agent_version }}
-        path: "azure-pipelines-agent/_package/*.tar.gz"
+        path: "azure-pipelines-agent/_package/linux-riscv64/*.tar.gz"
 
     - name: Create or verify tag
       run: |
