@@ -249,6 +249,40 @@ jobs:
         python3 $GITHUB_WORKSPACE/scripts/patch_runtimeconfig.py "$LAYOUT/bin/"
 
         echo "✅ Runtime bundled"
+
+
+    - name: Redirect dependency checks to bundled framework
+      run: |
+        cd azure-pipelines-agent
+        LAYOUT="_layout/linux-riscv64"
+        FRAMEWORK_REL="bin/shared/Microsoft.NETCore.App/10.0.2"
+
+        LIBS=(
+          "libcoreclr.so"
+          "libSystem.Security.Cryptography.Native.OpenSsl.so"
+          "libSystem.IO.Compression.Native.so"
+        )
+
+        echo "=== Scripts referencing ./bin/<lib> before patching ==="
+        for lib in "${LIBS[@]}"; do
+          echo "--- $lib ---"
+          grep -rln "\./bin/$lib" "$LAYOUT" 2>/dev/null || echo "(none)"
+        done
+
+        PATCHED_COUNT=0
+        for lib in "${LIBS[@]}"; do
+          while IFS= read -r file; do
+            sed -i "s|\./bin/$lib|./${FRAMEWORK_REL}/$lib|g" "$file"
+            echo "✅ Patched $file for $lib"
+            PATCHED_COUNT=$((PATCHED_COUNT + 1))
+          done < <(grep -rl "\./bin/$lib" "$LAYOUT" 2>/dev/null)
+        done
+
+        if [ "$PATCHED_COUNT" -eq 0 ]; then
+          echo "⚠️  No files found to patch — check.sh location may have moved upstream"
+        else
+          echo "✅ Patched $PATCHED_COUNT path(s) total"
+        fi
     - name: Verify Build Output
       run: |
         cd azure-pipelines-agent
