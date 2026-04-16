@@ -20,19 +20,44 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v5
 
-    - name: Clone azure-pipelines-agent at latest release tag
+    - name: Clone azure-pipelines-agent at latest stable release
       run: |
         rm -rf azure-pipelines-agent
-        git clone https://github.com/microsoft/azure-pipelines-agent.git
+
+        # releases/latest returns the most recent non-prerelease, non-draft
+        # release — correctly excludes the v5 pre-release tags that semver
+        # sort would pick up. Authenticated request raises the rate limit
+        # from 60/hr to 5000/hr.
+        LATEST_TAG=$(curl -sSfL \
+          -H "Authorization: Bearer $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest \
+          | python3 -c 'import sys, json; print(json.load(sys.stdin)["tag_name"])')
+
+        if [ -z "$LATEST_TAG" ]; then
+          echo "❌ Could not resolve latest stable release tag"
+          exit 1
+        fi
+
+        VERSION="${LATEST_TAG#v}"
+        echo "Latest stable release: $LATEST_TAG (version $VERSION)"
+
+        # Shallow clone directly at the tag — faster than clone + checkout
+        git clone --depth 1 --branch "$LATEST_TAG" \
+          https://github.com/microsoft/azure-pipelines-agent.git
         cd azure-pipelines-agent
 
-        # Pick the highest semver release tag (format: vN.N.N, no pre-release suffixes)
-        LATEST_TAG=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-        [ -z "$LATEST_TAG" ] && { echo "❌ No release tags found"; exit 1; }
-
-        echo "Latest upstream release: $LATEST_TAG"
-        git checkout "$LATEST_TAG"
-        echo "agentversion: $(cat src/agentversion)"
+        # Write the real version into agentversion. Upstream leaves this
+        # as a 3.999.999 placeholder on every branch and tag; their release
+        # pipeline injects the real version at build time — we do the same.
+        # The build bakes this into Agent.Listener.dll, which fixes:
+        #   • the "agent vX.Y.Z" banner shown by config.sh / run.sh
+        #   • the --version output used by your Check Version step
+        #   • the tag name, release title, and artifact filename
+        echo "$VERSION" > src/agentversion
+        echo "agentversion is now: $(cat src/agentversion)"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install dependencies
       run: |
