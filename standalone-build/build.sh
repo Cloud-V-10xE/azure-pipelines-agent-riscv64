@@ -326,7 +326,8 @@ cp "$SDK_DIR/host/fxr/10.0.2/libhostfxr.so" "$LAYOUT/bin/host/fxr/10.0.2/"
 
 # Copy shared framework (this is how real .NET installs work)
 mkdir -p "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2"
-cp "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/"* "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/" 2>/dev/null || true
+cp -r "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/." \
+      "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/"
 
 # Patch all runtimeconfig.json to request framework 10.0.2
 # (the app was compiled for net8.0 but .NET 10 can run it — forward compatible)

@@ -222,10 +222,24 @@ jobs:
         mkdir -p "$LAYOUT/bin/host/fxr/10.0.2"
         cp "$SDK_DIR/host/fxr/10.0.2/libhostfxr.so" "$LAYOUT/bin/host/fxr/10.0.2/"
 
-        # Copy shared framework
+        # Copy shared framework — recursive, no error suppression.
+        # The `/.` form copies the *contents* of the source dir (incl. any
+        # subdirs and dotfiles) into the destination.
         mkdir -p "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2"
-        cp "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/"* \
-          "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/" 2>/dev/null || true
+        cp -r "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/." \
+              "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/"
+
+        # Verify the critical runtime libraries actually made it across
+        for lib in libcoreclr.so libhostpolicy.so libclrjit.so; do
+          if [ ! -f "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/$lib" ]; then
+            echo "❌ Missing after copy: $lib"
+            echo "--- Source dir ---"
+            ls -la "$SDK_DIR/shared/Microsoft.NETCore.App/10.0.2/"
+            echo "--- Destination ---"
+            ls -la "$LAYOUT/bin/shared/Microsoft.NETCore.App/10.0.2/"
+            exit 1
+          fi
+        done
 
         # Symlink native libs into bin/ so config.sh ldd checks pass
         for lib in libcoreclr.so libSystem.Security.Cryptography.Native.OpenSsl.so libSystem.IO.Compression.Native.so; do
@@ -234,7 +248,7 @@ jobs:
           fi
         done
 
-        python3 $GITHUB_WORKSPACE/scripts/patch_runtimeconfig.py "$LAYOUT/bin/" 
+        python3 $GITHUB_WORKSPACE/scripts/patch_runtimeconfig.py "$LAYOUT/bin/"
 
         echo "✅ Runtime bundled and runtimeconfig patched"
 
@@ -245,21 +259,20 @@ jobs:
 
         for app in "Agent.Listener" "Agent.Worker" "Agent.PluginHost"; do
           DLL_PATH="_layout/linux-riscv64/bin/${app}.dll"
-          echo ""
           echo "Checking $app..."
-          if [ -f "$DLL_PATH" ]; then
-            echo "  ✅ DLL exists: $DLL_PATH"
-          else
-            echo "  ❌ DLL missing: $DLL_PATH"
-            exit 1
-          fi
+          [ -f "$DLL_PATH" ] && echo "  ✅ DLL exists: $DLL_PATH" \
+            || { echo "  ❌ DLL missing: $DLL_PATH"; exit 1; }
         done
 
         echo ""
         echo "Checking bundled runtime..."
         ls -lh _layout/linux-riscv64/bin/dotnet || { echo "❌ dotnet host missing"; exit 1; }
-        ls _layout/linux-riscv64/bin/shared/Microsoft.NETCore.App/10.0.2/libcoreclr.so \
-          || { echo "❌ libcoreclr.so missing"; exit 1; }
+        ls _layout/linux-riscv64/bin/host/fxr/10.0.2/libhostfxr.so \
+          || { echo "❌ libhostfxr.so missing"; exit 1; }
+        for lib in libcoreclr.so libhostpolicy.so libclrjit.so; do
+          ls _layout/linux-riscv64/bin/shared/Microsoft.NETCore.App/10.0.2/$lib \
+            || { echo "❌ $lib missing from bundled framework"; exit 1; }
+        done
         echo "✅ All verified"
 
     - name: Test Agent Execution
