@@ -20,10 +20,19 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v5
 
-    - name: Clone azure-pipelines-agent
+    - name: Clone azure-pipelines-agent at latest release tag
       run: |
         rm -rf azure-pipelines-agent
-        git clone --branch main https://github.com/microsoft/azure-pipelines-agent.git
+        git clone https://github.com/microsoft/azure-pipelines-agent.git
+        cd azure-pipelines-agent
+
+        # Pick the highest semver release tag (format: vN.N.N, no pre-release suffixes)
+        LATEST_TAG=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+        [ -z "$LATEST_TAG" ] && { echo "❌ No release tags found"; exit 1; }
+
+        echo "Latest upstream release: $LATEST_TAG"
+        git checkout "$LATEST_TAG"
+        echo "agentversion: $(cat src/agentversion)"
 
     - name: Install dependencies
       run: |
