@@ -251,7 +251,46 @@ jobs:
         python3 $GITHUB_WORKSPACE/scripts/patch_runtimeconfig.py "$LAYOUT/bin/"
 
         echo "✅ Runtime bundled and runtimeconfig patched"
+        
+    - name: Force framework-dependent runtimeconfig
+      run: |
+        cd azure-pipelines-agent
+        LAYOUT="_layout/linux-riscv64/bin"
 
+        echo "=== Current runtimeconfig.json contents (before override) ==="
+        for cfg in "$LAYOUT"/*.runtimeconfig.json; do
+          echo "--- $cfg ---"
+          cat "$cfg"
+          echo
+        done
+
+        # Authoritatively rewrite each Agent app's runtimeconfig.json to
+        # point at the bundled Microsoft.NETCore.App 10.0.2 framework.
+        # "rollForward: Major" lets the net8.0 app run on the 10.x runtime.
+        for app in Agent.Listener Agent.Worker Agent.PluginHost; do
+          CFG="$LAYOUT/$app.runtimeconfig.json"
+          cat > "$CFG" <<'EOF'
+        {
+          "runtimeOptions": {
+            "tfm": "net8.0",
+            "framework": {
+              "name": "Microsoft.NETCore.App",
+              "version": "10.0.2"
+            },
+            "rollForward": "Major"
+          }
+        }
+        EOF
+          echo "✅ Overwrote $CFG"
+        done
+
+        echo ""
+        echo "=== After override ==="
+        for cfg in "$LAYOUT"/Agent.*.runtimeconfig.json; do
+          echo "--- $cfg ---"
+          cat "$cfg"
+          echo
+        done
     - name: Verify Build Output
       run: |
         cd azure-pipelines-agent
