@@ -396,7 +396,7 @@ jobs:
 
           - Azure Pipelines Agent: https://github.com/microsoft/azure-pipelines-agent
           - .NET RISC-V Port: https://github.com/filipnavara/dotnet-riscv
-        files: azure-pipelines-agent/_package/*.tar.gz
+        files: azure-pipelines-agent/_package/linux-riscv64/*.tar.gz
         draft: false
         prerelease: false
         fail_on_unmatched_files: true
